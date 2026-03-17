@@ -1,0 +1,5 @@
+print("Olá Mundo")
+name = input("Qual é o seu nome? ")
+age = input("Qual é a sua idade? ")
+print(f"Olá {name}, sabia que em 2050 você terá {int(age) + (2050 - 2026)} anos. :)")
+input("Pressione Enter para sair...")
