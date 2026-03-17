@@ -2,20 +2,26 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from datetime import datetime
 import pandas as pd
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 
 def obter_pasta_base() -> Path:
-    """
-    Retorna a pasta base do programa.
-    Se estiver empacotado como .exe, usa a pasta do executável.
-    Se estiver rodando em Python, usa a pasta do arquivo .py.
-    """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
     return Path(__file__).parent
+
+
+def obter_caminho_recurso(nome_arquivo: str) -> Path:
+    """
+    Retorna o caminho correto de um recurso tanto no modo .py
+    quanto no executável gerado pelo PyInstaller.
+    """
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / nome_arquivo
+    return obter_pasta_base() / nome_arquivo
 
 
 def abrir_arquivo(caminho: Path) -> None:
@@ -30,10 +36,14 @@ def abrir_arquivo(caminho: Path) -> None:
         subprocess.run(["xdg-open", str(caminho)], check=True)
 
 
-def processar_planilhas(input_dir: Path, output_dir: Path) -> tuple[Path, int]:
+def processar_planilhas(
+    input_dir: Path,
+    output_dir: Path,
+    atualizar_progresso=None
+) -> tuple[Path, int]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    arquivos_excel = list(input_dir.glob("*.xlsx"))
+    arquivos_excel = sorted(input_dir.glob("*.xlsx"))
 
     if not arquivos_excel:
         raise FileNotFoundError(
@@ -41,11 +51,19 @@ def processar_planilhas(input_dir: Path, output_dir: Path) -> tuple[Path, int]:
         )
 
     lista_dfs = []
+    total_arquivos = len(arquivos_excel)
 
-    for arquivo in arquivos_excel:
+    for indice, arquivo in enumerate(arquivos_excel, start=1):
         df = pd.read_excel(arquivo)
         df["Arquivo_Origem"] = arquivo.name
         lista_dfs.append(df)
+
+        if atualizar_progresso:
+            progresso = int((indice / total_arquivos) * 65)
+            atualizar_progresso(
+                progresso,
+                f"Lendo arquivo {indice} de {total_arquivos}: {arquivo.name}"
+            )
 
     df = pd.concat(lista_dfs, ignore_index=True)
 
@@ -56,10 +74,17 @@ def processar_planilhas(input_dir: Path, output_dir: Path) -> tuple[Path, int]:
                 f"A coluna obrigatória '{coluna}' não foi encontrada em uma ou mais planilhas."
             )
 
+    if atualizar_progresso:
+        atualizar_progresso(72, "Limpando e validando os dados...")
+
+    df["Produto"] = df["Produto"].astype(str).str.strip()
     df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce")
     df["Valor_Unitario"] = pd.to_numeric(df["Valor_Unitario"], errors="coerce")
 
     df = df.dropna(subset=["Produto", "Quantidade", "Valor_Unitario"]).copy()
+    df = df[df["Produto"] != ""]
+    df = df[df["Quantidade"] >= 0]
+    df = df[df["Valor_Unitario"] >= 0]
 
     if df.empty:
         raise ValueError(
@@ -67,6 +92,9 @@ def processar_planilhas(input_dir: Path, output_dir: Path) -> tuple[Path, int]:
         )
 
     df["Total"] = df["Quantidade"] * df["Valor_Unitario"]
+
+    if atualizar_progresso:
+        atualizar_progresso(80, "Calculando métricas e rankings...")
 
     total_vendido = df["Total"].sum()
     total_unidades = df["Quantidade"].sum()
@@ -102,7 +130,11 @@ def processar_planilhas(input_dir: Path, output_dir: Path) -> tuple[Path, int]:
         "Total": "sum"
     }).sort_values(by="Total", ascending=False)
 
-    arquivo_saida = output_dir / "relatorio_vendas_consolidado.xlsx"
+    if atualizar_progresso:
+        atualizar_progresso(88, "Gerando relatório Excel...")
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    arquivo_saida = output_dir / f"relatorio_vendas_{timestamp}.xlsx"
 
     with pd.ExcelWriter(arquivo_saida, engine="xlsxwriter") as writer:
         resumo_geral.to_excel(writer, sheet_name="Resumo", index=False)
@@ -112,7 +144,39 @@ def processar_planilhas(input_dir: Path, output_dir: Path) -> tuple[Path, int]:
         df.to_excel(writer, sheet_name="Base_Consolidada", index=False)
 
         workbook = writer.book
-        worksheet = writer.sheets["Ranking_Faturamento"]
+
+        formato_titulo = workbook.add_format({"bold": True, "font_size": 12})
+        formato_moeda = workbook.add_format({"num_format": "R$ #,##0.00"})
+        formato_numero = workbook.add_format({"num_format": "0.00"})
+
+        ws_resumo = writer.sheets["Resumo"]
+        ws_rank_fat = writer.sheets["Ranking_Faturamento"]
+        ws_rank_qtd = writer.sheets["Ranking_Quantidade"]
+        ws_arquivo = writer.sheets["Por_Arquivo"]
+        ws_base = writer.sheets["Base_Consolidada"]
+
+        ws_resumo.set_column("A:A", 35)
+        ws_resumo.set_column("B:B", 20, formato_numero)
+        ws_rank_fat.set_column("A:A", 25)
+        ws_rank_fat.set_column("B:B", 15)
+        ws_rank_fat.set_column("C:C", 18, formato_moeda)
+
+        ws_rank_qtd.set_column("A:A", 25)
+        ws_rank_qtd.set_column("B:B", 15)
+        ws_rank_qtd.set_column("C:C", 18, formato_moeda)
+
+        ws_arquivo.set_column("A:A", 30)
+        ws_arquivo.set_column("B:B", 15)
+        ws_arquivo.set_column("C:C", 18, formato_moeda)
+
+        ws_base.set_column("A:A", 25)
+        ws_base.set_column("B:B", 15)
+        ws_base.set_column("C:C", 18, formato_moeda)
+        ws_base.set_column("D:D", 30)
+        ws_base.set_column("E:E", 18, formato_moeda)
+
+        ws_resumo.write("D2", "Resumo do Relatório", formato_titulo)
+        ws_resumo.write("D3", f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
 
         chart = workbook.add_chart({"type": "column"})
         chart.add_series({
@@ -123,7 +187,10 @@ def processar_planilhas(input_dir: Path, output_dir: Path) -> tuple[Path, int]:
         chart.set_title({"name": "Faturamento por Produto"})
         chart.set_x_axis({"name": "Produto"})
         chart.set_y_axis({"name": "Valor Vendido"})
-        worksheet.insert_chart("E2", chart)
+        ws_rank_fat.insert_chart("E2", chart)
+
+    if atualizar_progresso:
+        atualizar_progresso(100, "Relatório finalizado com sucesso.")
 
     return arquivo_saida, len(arquivos_excel)
 
@@ -132,7 +199,7 @@ class SalesAnalyzerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Analisador de Planilhas de Vendas")
-        self.root.geometry("760x430")
+        self.root.geometry("780x500")
         self.root.resizable(False, False)
 
         self.base_dir = obter_pasta_base()
@@ -146,7 +213,16 @@ class SalesAnalyzerApp:
         self.arquivos_var = tk.StringVar(value="Arquivos .xlsx encontrados: 0")
         self.ultimo_relatorio: Path | None = None
 
+        self.definir_icone()
         self.criar_interface()
+
+    def definir_icone(self):
+        try:
+            icone_path = obter_caminho_recurso("icon.ico")
+            if icone_path.exists():
+                self.root.iconbitmap(str(icone_path))
+        except Exception:
+            pass
 
     def criar_interface(self):
         frame = tk.Frame(self.root, padx=20, pady=20)
@@ -163,19 +239,16 @@ class SalesAnalyzerApp:
             frame,
             text=(
                 "Selecione a pasta onde estão os arquivos Excel no formato .xlsx.\n"
-                "O programa irá analisar todos os arquivos .xlsx encontrados nessa pasta\n"
-                "e salvar o relatório final automaticamente em uma pasta chamada 'Relatório'."
+                "O programa irá analisar todos os arquivos .xlsx encontrados nessa pasta e salvar\n"
+                "o relatório final automaticamente em uma pasta chamada 'Relatório', ao lado do executável."
             ),
             justify="left",
-            wraplength=700,
+            wraplength=730,
             anchor="w"
         )
         instrucoes.pack(fill="x", pady=(0, 15))
 
-        label_pasta = tk.Label(
-            frame,
-            text="Pasta com os arquivos .xlsx:"
-        )
+        label_pasta = tk.Label(frame, text="Pasta com os arquivos .xlsx:")
         label_pasta.pack(anchor="w")
 
         entrada_frame = tk.Frame(frame)
@@ -184,7 +257,7 @@ class SalesAnalyzerApp:
         entrada = tk.Entry(
             entrada_frame,
             textvariable=self.caminho_var,
-            width=78
+            width=82
         )
         entrada.pack(side="left", fill="x", expand=True)
 
@@ -206,14 +279,14 @@ class SalesAnalyzerApp:
         botoes_frame = tk.Frame(frame)
         botoes_frame.pack(pady=20)
 
-        botao_gerar = tk.Button(
+        self.botao_gerar = tk.Button(
             botoes_frame,
             text="Gerar Relatório",
             width=20,
             height=2,
             command=self.gerar_relatorio
         )
-        botao_gerar.pack(side="left", padx=5)
+        self.botao_gerar.pack(side="left", padx=5)
 
         botao_abrir = tk.Button(
             botoes_frame,
@@ -233,6 +306,18 @@ class SalesAnalyzerApp:
         )
         botao_atualizar.pack(side="left", padx=5)
 
+        progresso_titulo = tk.Label(frame, text="Progresso:")
+        progresso_titulo.pack(anchor="w", pady=(5, 0))
+
+        self.barra_progresso = ttk.Progressbar(
+            frame,
+            orient="horizontal",
+            length=730,
+            mode="determinate",
+            maximum=100
+        )
+        self.barra_progresso.pack(fill="x", pady=(5, 10))
+
         status_titulo = tk.Label(frame, text="Status:")
         status_titulo.pack(anchor="w")
 
@@ -240,7 +325,7 @@ class SalesAnalyzerApp:
             frame,
             textvariable=self.status_var,
             justify="left",
-            wraplength=700,
+            wraplength=730,
             bg="#f0f0f0",
             anchor="w",
             relief="sunken",
@@ -262,6 +347,7 @@ class SalesAnalyzerApp:
             self.status_var.set(
                 "Selecione a pasta que contém os arquivos Excel no formato .xlsx."
             )
+            self.atualizar_barra(0)
             return
 
         pasta = Path(caminho_texto)
@@ -276,6 +362,14 @@ class SalesAnalyzerApp:
             self.status_var.set(
                 "Nenhum arquivo .xlsx foi encontrado na pasta selecionada."
             )
+
+        self.atualizar_barra(0)
+
+    def atualizar_barra(self, valor: int, mensagem: str | None = None):
+        self.barra_progresso["value"] = valor
+        if mensagem:
+            self.status_var.set(mensagem)
+        self.root.update_idletasks()
 
     def selecionar_pasta(self):
         pasta = filedialog.askdirectory(
@@ -304,7 +398,14 @@ class SalesAnalyzerApp:
 
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
-            arquivo_saida, quantidade_arquivos = processar_planilhas(input_dir, self.output_dir)
+            self.botao_gerar.config(state="disabled")
+            self.atualizar_barra(5, "Iniciando processamento dos arquivos...")
+
+            arquivo_saida, quantidade_arquivos = processar_planilhas(
+                input_dir,
+                self.output_dir,
+                atualizar_progresso=self.atualizar_barra
+            )
             self.ultimo_relatorio = arquivo_saida
 
             mensagem = (
@@ -318,15 +419,19 @@ class SalesAnalyzerApp:
             messagebox.showinfo("Sucesso", mensagem)
 
         except Exception as e:
+            self.atualizar_barra(0)
             self.status_var.set(f"Erro: {e}")
             messagebox.showerror("Erro", str(e))
+
+        finally:
+            self.botao_gerar.config(state="normal")
 
     def abrir_relatorio(self):
         try:
             if self.ultimo_relatorio is None:
-                arquivo_padrao = self.output_dir / "relatorio_vendas_consolidado.xlsx"
-                if arquivo_padrao.exists():
-                    self.ultimo_relatorio = arquivo_padrao
+                relatorios = sorted(self.output_dir.glob("relatorio_vendas_*.xlsx"))
+                if relatorios:
+                    self.ultimo_relatorio = relatorios[-1]
                 else:
                     raise FileNotFoundError(
                         "Nenhum relatório foi gerado ainda. Gere o relatório primeiro."
