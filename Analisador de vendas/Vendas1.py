@@ -1,46 +1,51 @@
 import pandas as pd
+from pathlib import Path
 
-df = pd.read_excel("vendas.xlsx")
+base_dir = Path(__file__).parent
 
-# Criar total por linha
+arquivo_entrada = base_dir / "input" / "vendas.xlsx"
+arquivo_saida = base_dir / "output" / "relatorio_vendas.xlsx"
+
+df = pd.read_excel(arquivo_entrada)
+
 df["Total"] = df["Quantidade"] * df["Valor_Unitario"]
 
-# Métricas gerais
 total_vendido = df["Total"].sum()
 total_unidades = df["Quantidade"].sum()
-media_por_linha = df["Total"].mean()
 media_por_unidade = total_vendido / total_unidades
 
-# Resumo por produto em valor
-resumo_valor = df.groupby("Produto")["Total"].sum().sort_values(ascending=False)
+resumo_produtos = df.groupby("Produto").agg({
+    "Quantidade": "sum",
+    "Total": "sum"
+})
 
-# Resumo por produto em quantidade
-resumo_quantidade = df.groupby("Produto")["Quantidade"].sum().sort_values(ascending=False)
+ranking_faturamento = resumo_produtos.sort_values(by="Total", ascending=False)
+ranking_quantidade = resumo_produtos.sort_values(by="Quantidade", ascending=False)
 
-# Produto mais vendido em valor
-produto_mais_valor = resumo_valor.idxmax()
-valor_produto_mais_valor = resumo_valor.max()
+resumo_geral = pd.DataFrame({
+    "Métrica": [
+        "Faturamento total",
+        "Total de unidades vendidas",
+        "Média por unidade"
+    ],
+    "Valor": [
+        total_vendido,
+        total_unidades,
+        media_por_unidade
+    ]
+})
 
-# Produto mais vendido em quantidade
-produto_mais_quantidade = resumo_quantidade.idxmax()
-quantidade_produto_mais_quantidade = resumo_quantidade.max()
+with pd.ExcelWriter(arquivo_saida) as writer:
+    resumo_geral.to_excel(writer, sheet_name="Resumo", index=False)
+    ranking_faturamento.to_excel(writer, sheet_name="Ranking_Faturamento")
+    ranking_quantidade.to_excel(writer, sheet_name="Ranking_Quantidade")
 
-print("=== RESUMO DE VENDAS ===")
-print(f"Faturamento total: R$ {total_vendido:.2f}")
-print(f"Total de unidades vendidas: {total_unidades}")
-print(f"Média por linha de venda: R$ {media_por_linha:.2f}")
-print(f"Média por unidade vendida: R$ {media_por_unidade:.2f}")
+print("Relatório gerado com sucesso")
 
-print("\n=== MAIS VENDIDO EM QUANTIDADE ===")
-print(f"Produto: {produto_mais_quantidade}")
-print(f"Unidades vendidas: {quantidade_produto_mais_quantidade}")
+# Salvar relatório
+with pd.ExcelWriter("relatorio_vendas.xlsx") as writer:
+    resumo_geral.to_excel(writer, sheet_name="Resumo", index=False)
+    ranking_faturamento.to_excel(writer, sheet_name="Ranking_Faturamento")
+    ranking_quantidade.to_excel(writer, sheet_name="Ranking_Quantidade")
 
-print("\n=== MAIS VENDIDO EM FATURAMENTO ===")
-print(f"Produto: {produto_mais_valor}")
-print(f"Faturamento: R$ {valor_produto_mais_valor:.2f}")
-
-print("\n=== FATURAMENTO POR PRODUTO ===")
-print(resumo_valor)
-
-print("\n=== QUANTIDADE POR PRODUTO ===")
-print(resumo_quantidade)
+print("Relatório gerado com sucesso: relatorio_vendas.xlsx")
