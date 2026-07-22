@@ -1,0 +1,1 @@
+This is a very simple project folder to put some projects i may or may not work on to just train and develop my programing skills, i mostly don't upload to github but might eventually do with one or two projects.
